@@ -2,6 +2,9 @@ import streamlit as st
 import joblib
 import numpy as np
 import pandas as pd
+import sys
+import types
+import sklearn
 
 # ===============================
 # Page Config
@@ -11,6 +14,42 @@ st.set_page_config(
     page_icon="🚗",
     layout="wide"
 )
+
+# ===============================
+# Compatibility shim for sklearn version mismatches
+# ===============================
+# Pickled GradientBoosting models can reference internal sklearn modules
+# (e.g. sklearn.ensemble._gb_losses / sklearn._loss) whose exact names and
+# locations changed across sklearn versions. If the .pkl was trained with a
+# different sklearn version than the one installed here, unpickling raises
+# ModuleNotFoundError (e.g. "No module named '_loss'").
+#
+# This shim pre-registers aliases in sys.modules so the pickle loader can
+# resolve those old/new paths. It's a best-effort patch — the real, durable
+# fix is pinning scikit-learn in requirements.txt to the version used for
+# training (see error panel below for instructions).
+def _install_sklearn_compat_shims():
+    candidates = []
+
+    try:
+        from sklearn import _loss as _new_loss
+        candidates.append(("sklearn.ensemble._gb_losses", _new_loss))
+        candidates.append(("_loss", _new_loss))
+    except ImportError:
+        pass
+
+    try:
+        from sklearn.ensemble import _gb_losses as _old_loss
+        candidates.append(("sklearn._loss", _old_loss))
+        candidates.append(("_loss", _old_loss))
+    except ImportError:
+        pass
+
+    for name, module in candidates:
+        if name not in sys.modules:
+            sys.modules[name] = module
+
+_install_sklearn_compat_shims()
 
 # ===============================
 # Load Artifacts
@@ -27,7 +66,20 @@ def load_artifacts():
 try:
     label_encoders, scaler, feature_columns, best_model, gbr_model = load_artifacts()
 except Exception as e:
-    st.error("❌ Error loading model artifacts. Make sure all .pkl files are in the same folder as this app.")
+    st.error("❌ Error loading model artifacts.")
+    st.write(
+        f"**Installed scikit-learn version:** `{sklearn.__version__}`\n\n"
+        "This error is almost always a **scikit-learn version mismatch** between "
+        "the environment your `.pkl` files were trained/saved in and the one "
+        "running this app. A compatibility shim was attempted automatically, "
+        "but it didn't resolve this case.\n\n"
+        "**Real fix:** add a `requirements.txt` to your app's repo pinning the "
+        "exact scikit-learn version used for training, e.g.:\n\n"
+        "```\nscikit-learn==1.3.2\n```\n\n"
+        "(replace with the version you get from running "
+        "`import sklearn; print(sklearn.__version__)` in the notebook where "
+        "you originally saved these models), then reboot the app."
+    )
     st.exception(e)
     st.stop()
 
